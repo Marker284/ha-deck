@@ -5,9 +5,10 @@ import { getWebInfo, WebInfo } from "./api";
 
 interface Props {
   onDone: () => void;
+  onSkip: () => void;
 }
 
-export const SetupView: FC<Props> = ({ onDone }) => {
+export const SetupView: FC<Props> = ({ onDone, onSkip }) => {
   const [webInfo, setWebInfo] = useState<WebInfo | null>(null);
   const [saved, setSaved] = useState(false);
   const baseVersionRef = useRef<number>(-1);  // фиксируем версию при старте, не меняем
@@ -145,7 +146,7 @@ export const SetupView: FC<Props> = ({ onDone }) => {
 
       <PanelSection>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={onDone}>
+          <ButtonItem layout="below" onClick={onSkip}>
             Skip setup →
           </ButtonItem>
         </PanelSectionRow>

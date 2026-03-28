@@ -38,7 +38,10 @@ const Content: FC = () => {
 
   if (view === "setup") {
     return (
-      <SetupView onDone={() => loadSettings()} />
+      <SetupView
+        onDone={() => loadSettings()}
+        onSkip={() => setView("settings")}
+      />
     );
   }
 
