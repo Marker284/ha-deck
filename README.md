@@ -2,6 +2,12 @@
 
 Control [Home Assistant](https://www.home-assistant.io/) directly from your Steam Deck's Quick Access Menu.
 
+## Screenshots
+
+| Main | Setup | Settings |
+|------|-------|----------|
+| ![Main](screenshots/main.jpg) | ![Setup](screenshots/setup.jpg) | ![Settings](screenshots/settings.jpg) |
+
 ## Features
 
 - 💡 **Lights** — toggle on/off, brightness slider, color temperature
