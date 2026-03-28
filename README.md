@@ -48,6 +48,10 @@ pnpm install
 pnpm run build
 ```
 
+## Contributing & Feedback
+
+Found a bug or missing a feature? **[Open an issue](https://github.com/Marker284/ha-deck/issues/new)** — all reports and suggestions are welcome.
+
 ## License
 
 MIT — see [LICENSE](LICENSE)
