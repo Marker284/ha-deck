@@ -12,12 +12,12 @@ Control [Home Assistant](https://www.home-assistant.io/) directly from your Stea
 
 ## Installation
 
-Install via [Decky Loader](https://decky.xyz/) Plugin Store (search "HA Deck").
+> 🕐 **Decky Plugin Store submission is in progress.** Once approved, you'll be able to install directly from the store.
 
-Manual install:
-```
-~/.var/app/org.valvesoftware.Steam/data/Steam/steamapps/common/SteamOS/homebrew/plugins/ha-deck/
-```
+**Manual install (available now):**
+1. Download the latest release zip from [Releases](https://github.com/Marker284/ha-deck/releases)
+2. In Decky Loader settings → click the 3-dot menu → **Manual plugin install**
+3. Paste the zip URL and install
 
 ## Setup
 
