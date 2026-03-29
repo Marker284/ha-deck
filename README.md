@@ -2,6 +2,10 @@
 
 Control [Home Assistant](https://www.home-assistant.io/) directly from your Steam Deck's Quick Access Menu.
 
+> ⭐ **If you find this plugin useful, please consider giving it a star on GitHub — it helps others discover the project and motivates further development. Thank you!**
+> 
+> [![GitHub Stars](https://img.shields.io/github/stars/Marker284/ha-deck?style=social)](https://github.com/Marker284/ha-deck/stargazers)
+
 ## Screenshots
 
 | Main | Setup | Settings |
