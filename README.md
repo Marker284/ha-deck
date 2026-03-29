@@ -21,9 +21,12 @@ Control [Home Assistant](https://www.home-assistant.io/) directly from your Stea
 > 🕐 **Decky Plugin Store submission is in progress.** Once approved, you'll be able to install directly from the store.
 
 **Manual install (available now):**
-1. Download the latest release zip from [Releases](https://github.com/Marker284/ha-deck/releases)
-2. In Decky Loader settings → click the 3-dot menu → **Manual plugin install**
-3. Paste the zip URL and install
+1. Open Decky Loader → click the ⚙️ icon (Settings)
+2. Scroll down to **Developer** → enable **Developer Mode**
+3. A new **Developer** tab appears — open it
+4. Click **Install plugin from URL**
+5. Go to [Releases](https://github.com/Marker284/ha-deck/releases), right-click `ha-deck-vX.X.X.zip` → Copy link
+6. Paste the URL and confirm install
 
 ## Setup
 
