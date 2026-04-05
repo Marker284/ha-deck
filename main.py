@@ -5,7 +5,6 @@ import aiohttp
 import socket
 import os
 import signal
-import subprocess
 import json
 import threading
 import time
@@ -15,11 +14,13 @@ from settings import SettingsManager
 settingsDir = os.environ["DECKY_PLUGIN_SETTINGS_DIR"]
 settings = SettingsManager(name="settings", settings_directory=settingsDir)
 
-WEB_PORT = 8765
+WEB_PORT_DEFAULT = 8765
+WEB_PORT_MAX_OFFSET = 20  # пробуем 8765..8785
 
 # ── Module-level state (survives hot-reloads within same process) ─────────────
 _config_version = 0
 _http_server: "HTTPServer | None" = None
+_active_port: int = WEB_PORT_DEFAULT
 _ha_session: "aiohttp.ClientSession | None" = None
 
 
@@ -216,7 +217,6 @@ class _ReusableHTTPServer(HTTPServer):
     allow_reuse_address = True
 
     def server_bind(self):
-        # SO_REUSEPORT — страховка: даже если старый сокет ещё жив, новый привяжется
         try:
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         except (AttributeError, OSError):
@@ -224,50 +224,30 @@ class _ReusableHTTPServer(HTTPServer):
         super().server_bind()
 
 
-def _kill_port(port: int):
-    """Убиваем все процессы на порту через SIGKILL напрямую."""
-    try:
-        result = subprocess.run(
-            ["fuser", f"{port}/tcp"],
-            capture_output=True, text=True, timeout=3
-        )
-        for pid_str in result.stdout.strip().split():
-            try:
-                pid = int(pid_str.strip())
-                os.kill(pid, signal.SIGKILL)
-                decky_plugin.logger.info(f"Killed PID {pid} on port {port}")
-            except (ValueError, ProcessLookupError, PermissionError):
-                pass
-    except Exception as e:
-        decky_plugin.logger.warning(f"_kill_port: {e}")
-    time.sleep(0.5)
-
-
-def _port_in_use(port: int) -> bool:
-    """Проверяем занят ли порт реально."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.3)
-        return s.connect_ex(("127.0.0.1", port)) == 0
-
-
 def _start_web_server_if_needed():
-    global _http_server
+    global _http_server, _active_port
     if _http_server is not None:
         decky_plugin.logger.info("Web server already running")
         return
-    # Если порт занят зомби-процессом — убиваем
-    if _port_in_use(WEB_PORT):
-        decky_plugin.logger.warning(f"Port {WEB_PORT} occupied by zombie — killing")
-        _kill_port(WEB_PORT)
+    preferred = settings.getSetting("web_port", WEB_PORT_DEFAULT)
     try:
-        server = _ReusableHTTPServer(("0.0.0.0", WEB_PORT), _Handler)
-        _http_server = server
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-        decky_plugin.logger.info(f"Web config server started on :{WEB_PORT}")
-    except Exception as e:
-        _http_server = None
-        decky_plugin.logger.error(f"Failed to start web server: {e}")
+        preferred = int(preferred)
+    except (ValueError, TypeError):
+        preferred = WEB_PORT_DEFAULT
+    for port in range(preferred, preferred + WEB_PORT_MAX_OFFSET + 1):
+        try:
+            server = _ReusableHTTPServer(("0.0.0.0", port), _Handler)
+            _http_server = server
+            _active_port = port
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            if port != preferred:
+                decky_plugin.logger.info(f"Port {preferred} busy — using {port}")
+            decky_plugin.logger.info(f"Web config server started on :{port}")
+            return
+        except OSError as e:
+            decky_plugin.logger.warning(f"Port {port} busy ({e}), trying next...")
+    decky_plugin.logger.error(f"No free port found in range {preferred}–{preferred + WEB_PORT_MAX_OFFSET}")
 
 
 def _stop_web_server_sync():
@@ -320,12 +300,12 @@ class Plugin:
             s.close()
         except Exception:
             ip = "127.0.0.1"
-        # running = наш сервер ИЛИ что-то реально слушает порт (зомби)
-        actually_running = (_http_server is not None) or _port_in_use(WEB_PORT)
         return {
-            "url": f"http://{ip}:{WEB_PORT}",
+            "url": f"http://{ip}:{_active_port}",
+            "port": _active_port,
+            "preferred_port": settings.getSetting("web_port", WEB_PORT_DEFAULT),
             "config_version": _config_version,
-            "running": actually_running,
+            "running": _http_server is not None,
         }
 
     async def get_config_version(self) -> int:
@@ -340,12 +320,11 @@ class Plugin:
         return await self.get_web_info()
 
     async def stop_web_server_rpc(self) -> bool:
-        """Остановить веб-сервер вручную (включая зомби-процессы на порту)"""
+        """Остановить веб-сервер вручную."""
         await asyncio.to_thread(_stop_web_server_sync)
-        # Если что-то всё ещё держит порт — добиваем
-        if _port_in_use(WEB_PORT):
-            await asyncio.to_thread(_kill_port, WEB_PORT)
         return True
+
+
 
     async def reset_settings(self) -> bool:
         """Полный сброс всех настроек"""
