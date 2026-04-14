@@ -67,4 +67,4 @@ Found a bug or missing a feature? **[Open an issue](https://github.com/Marker284
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+BSD 3-Clause — see [LICENSE](LICENSE)
