@@ -6,6 +6,6 @@
   "publish": {
     "tags": ["home-assistant", "smarthome"],
     "description": "Control Home Assistant from your Steam Deck",
-    "image": ""
+    "image": "https://raw.githubusercontent.com/Marker284/ha-deck/main/screenshots/main.jpg"
   }
 }
