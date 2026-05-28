@@ -8,6 +8,7 @@ import signal
 import json
 import threading
 import time
+import ssl
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from settings import SettingsManager
 
@@ -24,11 +25,28 @@ _active_port: int = WEB_PORT_DEFAULT
 _ha_session: "aiohttp.ClientSession | None" = None
 
 
+def _make_ssl_context() -> ssl.SSLContext:
+    """Create SSL context with certifi CAs explicitly loaded.
+
+    In PyInstaller bundles (Decky PluginLoader) ssl.create_default_context()
+    cannot locate system CA paths, so we must point it at certifi's bundled
+    cacert.pem manually.
+    """
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(certifi.where())
+        decky_plugin.logger.info(f"SSL: loaded certifi CAs from {certifi.where()}")
+    except Exception as e:
+        decky_plugin.logger.warning(f"SSL: could not load certifi, using default context ({e})")
+    return ctx
+
+
 async def _get_session() -> aiohttp.ClientSession:
     """Возвращает переиспользуемую HTTP сессию — не создаём новую на каждый запрос."""
     global _ha_session
     if _ha_session is None or _ha_session.closed:
-        connector = aiohttp.TCPConnector(limit=5, ttl_dns_cache=300)
+        connector = aiohttp.TCPConnector(limit=5, ttl_dns_cache=300, ssl=_make_ssl_context())
         _ha_session = aiohttp.ClientSession(connector=connector)
     return _ha_session
 
@@ -38,6 +56,63 @@ async def _close_session():
     if _ha_session and not _ha_session.closed:
         await _ha_session.close()
         _ha_session = None
+
+
+def _is_https_url(url: str) -> bool:
+    return url.lower().startswith("https://")
+
+
+def _is_cert_verify_error(err: Exception) -> bool:
+    """Check if the error is likely due to SSL certificate verification failure.
+
+     Checks for common OpenSSL error messages in the exception text, and also
+     handles aiohttp's specific ClientConnectorCertificateError which wraps SSL errors.
+    """
+
+    # aiohttp wraps SSL verification failures in ClientConnectorCertificateError.
+    if isinstance(err, aiohttp.ClientConnectorCertificateError):
+        return True
+
+    # Surface OpenSSL verification text in nested exception messages.
+    text = str(err).lower()
+    markers = (
+        "certificate verify failed",
+        "unable to get local issuer certificate",
+        "self signed certificate",
+    )
+    return any(marker in text for marker in markers)
+
+
+async def _ha_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict,
+    timeout: aiohttp.ClientTimeout,
+    json_payload: dict | None = None,
+):
+    """Run HA HTTP request with verified TLS first, then insecure retry on cert errors for HTTPS."""
+    s = await _get_session()
+    used_insecure_ssl = False
+
+    try:
+        response = await s.request(method, url, headers=headers, timeout=timeout, json=json_payload)
+        return response, used_insecure_ssl
+    except Exception as e:
+        if not (_is_https_url(url) and _is_cert_verify_error(e)):
+            raise
+
+        used_insecure_ssl = True
+        decky_plugin.logger.warning(f"SSL verify failed for {url}; retrying with insecure SSL ({type(e).__name__}: {e})")
+        response = await s.request(
+            method,
+            url,
+            headers=headers,
+            timeout=timeout,
+            json=json_payload,
+            ssl=False,
+        )
+        return response, used_insecure_ssl
 
 # ── HTML config page ───────────────────────────────────────────────────────────
 HTML_PAGE = """<!DOCTYPE html>
@@ -135,6 +210,29 @@ HTML_PAGE = """<!DOCTYPE html>
 </html>"""
 
 
+async def _test_ha_connection_async(ha_url: str, ha_token: str) -> dict:
+    """One-shot connection test using a temporary aiohttp session."""
+    url = ha_url.rstrip("/") + "/api/"
+    headers = {"Authorization": f"Bearer {ha_token}"}
+    connector = aiohttp.TCPConnector(ssl=_make_ssl_context())
+    async with aiohttp.ClientSession(connector=connector) as session:
+        used_insecure = False
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                status = r.status
+        except Exception as e:
+            if not (_is_https_url(url) and _is_cert_verify_error(e)):
+                raise
+            used_insecure = True
+            decky_plugin.logger.warning(f"SSL verify failed for {url}; retrying with insecure SSL")
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5), ssl=False) as r:
+                status = r.status
+        if status == 200:
+            msg = "Connected!" + (" (SSL verification disabled for self-signed cert)" if used_insecure else "")
+            return {"success": True, "message": msg}
+        return {"success": False, "message": f"HTTP {status}"}
+
+
 # ── Web server (module-level, survives plugin hot-reloads) ────────────────────
 
 class _Handler(BaseHTTPRequestHandler):
@@ -190,15 +288,10 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/test":
             try:
                 data = self._read_json()
-                import urllib.request
-                url = data.get("ha_url", "").rstrip("/") + "/api/"
-                token = data.get("ha_token", "")
-                req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    if r.status == 200:
-                        self._send_json({"success": True, "message": "Connected!"})
-                    else:
-                        self._send_json({"success": False, "message": f"HTTP {r.status}"})
+                result = asyncio.run(_test_ha_connection_async(
+                    data.get("ha_url", ""), data.get("ha_token", "")
+                ))
+                self._send_json(result)
             except Exception as e:
                 self._send_json({"success": False, "message": str(e)})
         else:
@@ -370,11 +463,18 @@ class Plugin:
             url = settings.getSetting("ha_url", "").rstrip("/")
             token = settings.getSetting("ha_token", "")
             headers = {"Authorization": f"Bearer {token}"}
-            s = await _get_session()
-            async with s.get(f"{url}/api/", headers=headers,
-                             timeout=aiohttp.ClientTimeout(total=5)) as r:
+            response, used_insecure_ssl = await _ha_request(
+                "GET",
+                f"{url}/api/",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5),
+            )
+            async with response as r:
                 if r.status == 200:
-                    return {"success": True, "message": "Connected!"}
+                    msg = "Connected!"
+                    if used_insecure_ssl:
+                        msg += " (SSL verification disabled for self-signed cert)"
+                    return {"success": True, "message": msg}
                 return {"success": False, "message": f"HTTP {r.status}"}
         except Exception as e:
             return {"success": False, "message": str(e)}
@@ -391,10 +491,13 @@ class Plugin:
         return settings.getSetting("ha_url", "").rstrip("/")
 
     async def _all_states(self):
-        s = await _get_session()
-        async with s.get(f"{self._base_url()}/api/states",
-                         headers=self._headers(),
-                         timeout=aiohttp.ClientTimeout(total=10)) as r:
+        response, _used_insecure_ssl = await _ha_request(
+            "GET",
+            f"{self._base_url()}/api/states",
+            headers=self._headers(),
+            timeout=aiohttp.ClientTimeout(total=10),
+        )
+        async with response as r:
             r.raise_for_status()
             return await r.json()
 
@@ -506,13 +609,14 @@ class Plugin:
     async def _post_service(self, domain: str, service: str, payload: dict) -> bool:
         """Переиспользуемый хелпер для вызова сервисов HA."""
         try:
-            s = await _get_session()
-            async with s.post(
+            response, _used_insecure_ssl = await _ha_request(
+                "POST",
                 f"{self._base_url()}/api/services/{domain}/{service}",
-                json=payload,
                 headers=self._headers(),
                 timeout=aiohttp.ClientTimeout(total=5),
-            ) as r:
+                json_payload=payload,
+            )
+            async with response as r:
                 return r.status in (200, 201)
         except Exception as e:
             decky_plugin.logger.error(f"{domain}/{service}: {e}")
