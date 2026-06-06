@@ -366,6 +366,31 @@ atexit.register(_graceful_exit)          # нормальный выход
 signal.signal(signal.SIGTERM, _graceful_exit)  # systemctl stop / kill
 
 
+def _migrate_legacy_categories():
+    """Однократная миграция: до v1.3.0 climate.* лежал в selected_sensors,
+    а fan.* в selected_switches. Перетаскиваем их в свои новые категории."""
+    sensors = settings.getSetting("selected_sensors", []) or []
+    switches = settings.getSetting("selected_switches", []) or []
+    climates = settings.getSetting("selected_climates", []) or []
+    fans = settings.getSetting("selected_fans", []) or []
+
+    moved_climates = [e for e in sensors if e.startswith("climate.")]
+    moved_fans = [e for e in switches if e.startswith("fan.")]
+    if not moved_climates and not moved_fans:
+        return
+
+    if moved_climates:
+        settings.setSetting("selected_sensors", [e for e in sensors if not e.startswith("climate.")])
+        settings.setSetting("selected_climates", list(dict.fromkeys(climates + moved_climates)))
+    if moved_fans:
+        settings.setSetting("selected_switches", [e for e in switches if not e.startswith("fan.")])
+        settings.setSetting("selected_fans", list(dict.fromkeys(fans + moved_fans)))
+    settings.commit()
+    decky_plugin.logger.info(
+        f"Migrated {len(moved_climates)} climate(s) and {len(moved_fans)} fan(s) to new categories"
+    )
+
+
 # ── Plugin class ───────────────────────────────────────────────────────────────
 
 class Plugin:
@@ -373,6 +398,7 @@ class Plugin:
 
     async def _main(self):
         settings.read()
+        _migrate_legacy_categories()
         # Запускаем веб-сервер только если ещё не настроено
         if not settings.getSetting("ha_url", "") or not settings.getSetting("ha_token", ""):
             _start_web_server_if_needed()
@@ -422,8 +448,13 @@ class Plugin:
     async def reset_settings(self) -> bool:
         """Полный сброс всех настроек"""
         global _config_version
-        for key in ("ha_url", "ha_token", "selected_lights", "selected_sensors", "selected_switches"):
-            settings.setSetting(key, "" if key in ("ha_url", "ha_token") else [])
+        STRING_KEYS = ("ha_url", "ha_token")
+        LIST_KEYS = ("selected_lights", "selected_sensors", "selected_switches",
+                     "selected_climates", "selected_fans")
+        for key in STRING_KEYS:
+            settings.setSetting(key, "")
+        for key in LIST_KEYS:
+            settings.setSetting(key, [])
         settings.commit()
         _config_version = 0
         _start_web_server_if_needed()  # после сброса сразу поднимаем веб для перенастройки
@@ -439,6 +470,8 @@ class Plugin:
             "selected_lights": settings.getSetting("selected_lights", []),
             "selected_sensors": settings.getSetting("selected_sensors", []),
             "selected_switches": settings.getSetting("selected_switches", []),
+            "selected_climates": settings.getSetting("selected_climates", []),
+            "selected_fans": settings.getSetting("selected_fans", []),
         }
 
     async def save_credentials(self, ha_url: str, ha_token: str) -> bool:
@@ -449,10 +482,21 @@ class Plugin:
         _config_version += 1
         return True
 
-    async def save_selected_entities(self, lights: list, sensors: list, switches: list) -> bool:
+    async def save_selected_entities(
+        self,
+        lights: list,
+        sensors: list,
+        switches: list,
+        climates: list | None = None,
+        fans: list | None = None,
+    ) -> bool:
         settings.setSetting("selected_lights", lights)
         settings.setSetting("selected_sensors", sensors)
         settings.setSetting("selected_switches", switches)
+        if climates is not None:
+            settings.setSetting("selected_climates", climates)
+        if fans is not None:
+            settings.setSetting("selected_fans", fans)
         settings.commit()
         return True
 
@@ -515,10 +559,11 @@ class Plugin:
             return []
 
     async def get_all_switches(self) -> list:
-        """Возвращает все переключаемые энтити: switch, input_boolean, fan и т.д."""
+        """Возвращает все переключаемые энтити: switch, input_boolean, automation, script.
+        fan.* вынесен в отдельную категорию (get_all_fans)."""
         try:
             states = await self._all_states()
-            DOMAINS = ("switch.", "input_boolean.", "fan.", "automation.", "script.")
+            DOMAINS = ("switch.", "input_boolean.", "automation.", "script.")
             return [{"entity_id": s["entity_id"],
                      "name": s["attributes"].get("friendly_name", s["entity_id"]),
                      "state": s["state"]}
@@ -529,6 +574,7 @@ class Plugin:
             return []
 
     async def get_all_sensors(self) -> list:
+        """sensor.* + binary_sensor.*. climate.* вынесен в отдельную категорию."""
         try:
             states = await self._all_states()
             return [{"entity_id": s["entity_id"],
@@ -536,9 +582,31 @@ class Plugin:
                      "state": s["state"],
                      "unit": s["attributes"].get("unit_of_measurement", "")}
                     for s in states
-                    if s["entity_id"].startswith(("sensor.", "binary_sensor.", "climate."))]
+                    if s["entity_id"].startswith(("sensor.", "binary_sensor."))]
         except Exception as e:
             decky_plugin.logger.error(f"get_all_sensors: {e}")
+            return []
+
+    async def get_all_climates(self) -> list:
+        try:
+            states = await self._all_states()
+            return [{"entity_id": s["entity_id"],
+                     "name": s["attributes"].get("friendly_name", s["entity_id"]),
+                     "state": s["state"]}
+                    for s in states if s["entity_id"].startswith("climate.")]
+        except Exception as e:
+            decky_plugin.logger.error(f"get_all_climates: {e}")
+            return []
+
+    async def get_all_fans(self) -> list:
+        try:
+            states = await self._all_states()
+            return [{"entity_id": s["entity_id"],
+                     "name": s["attributes"].get("friendly_name", s["entity_id"]),
+                     "state": s["state"]}
+                    for s in states if s["entity_id"].startswith("fan.")]
+        except Exception as e:
+            decky_plugin.logger.error(f"get_all_fans: {e}")
             return []
 
     # ── Live state ────────────────────────────────────────────────────────────
@@ -604,6 +672,64 @@ class Plugin:
             decky_plugin.logger.error(f"get_sensor_states: {e}")
             return []
 
+    async def get_climate_states(self, entity_ids: list) -> list:
+        if not entity_ids:
+            return []
+        try:
+            state_map = {s["entity_id"]: s for s in await self._all_states()}
+            result = []
+            for eid in entity_ids:
+                if eid not in state_map:
+                    continue
+                s = state_map[eid]
+                a = s["attributes"]
+                result.append({
+                    "entity_id": eid,
+                    "name": a.get("friendly_name", eid),
+                    "hvac_mode": s["state"],
+                    "hvac_modes": a.get("hvac_modes", []) or [],
+                    "current_temperature": a.get("current_temperature"),
+                    "target_temperature": a.get("temperature"),
+                    "min_temp": a.get("min_temp", 7),
+                    "max_temp": a.get("max_temp", 35),
+                    "target_temp_step": a.get("target_temp_step", 0.5),
+                    "unit": a.get("unit_of_measurement", "°C"),
+                    "hvac_action": a.get("hvac_action"),
+                })
+            return result
+        except Exception as e:
+            decky_plugin.logger.error(f"get_climate_states: {e}")
+            return []
+
+    async def get_fan_states(self, entity_ids: list) -> list:
+        if not entity_ids:
+            return []
+        try:
+            state_map = {s["entity_id"]: s for s in await self._all_states()}
+            result = []
+            for eid in entity_ids:
+                if eid not in state_map:
+                    continue
+                s = state_map[eid]
+                a = s["attributes"]
+                # FanEntityFeature: 1=SET_SPEED, 2=OSCILLATE, 4=DIRECTION, 8=PRESET_MODE
+                features = a.get("supported_features", 0)
+                result.append({
+                    "entity_id": eid,
+                    "name": a.get("friendly_name", eid),
+                    "state": s["state"],
+                    "percentage": a.get("percentage"),
+                    "percentage_step": a.get("percentage_step", 1),
+                    "supports_speed": bool(features & 1),
+                    "preset_mode": a.get("preset_mode"),
+                    "preset_modes": a.get("preset_modes", []) or [],
+                    "supports_preset": bool(features & 8),
+                })
+            return result
+        except Exception as e:
+            decky_plugin.logger.error(f"get_fan_states: {e}")
+            return []
+
     # ── Light control ─────────────────────────────────────────────────────────
 
     async def _post_service(self, domain: str, service: str, payload: dict) -> bool:
@@ -635,3 +761,26 @@ class Plugin:
 
     async def toggle_switch(self, entity_id: str) -> bool:
         return await self._post_service("homeassistant", "toggle", {"entity_id": entity_id})
+
+    # ── Climate control ───────────────────────────────────────────────────────
+
+    async def set_climate_temperature(self, entity_id: str, temperature: float) -> bool:
+        return await self._post_service("climate", "set_temperature",
+                                        {"entity_id": entity_id, "temperature": temperature})
+
+    async def set_climate_hvac_mode(self, entity_id: str, hvac_mode: str) -> bool:
+        return await self._post_service("climate", "set_hvac_mode",
+                                        {"entity_id": entity_id, "hvac_mode": hvac_mode})
+
+    # ── Fan control ───────────────────────────────────────────────────────────
+
+    async def toggle_fan(self, entity_id: str) -> bool:
+        return await self._post_service("fan", "toggle", {"entity_id": entity_id})
+
+    async def set_fan_percentage(self, entity_id: str, percentage: int) -> bool:
+        return await self._post_service("fan", "set_percentage",
+                                        {"entity_id": entity_id, "percentage": percentage})
+
+    async def set_fan_preset_mode(self, entity_id: str, preset_mode: str) -> bool:
+        return await self._post_service("fan", "set_preset_mode",
+                                        {"entity_id": entity_id, "preset_mode": preset_mode})

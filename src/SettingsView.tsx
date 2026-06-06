@@ -15,6 +15,8 @@ import {
   getAllLights,
   getAllSensors,
   getAllSwitches,
+  getAllClimates,
+  getAllFans,
   getWebInfo,
   getSettings,
   startWebServerRpc,
@@ -24,7 +26,7 @@ import {
 
 // ── Settings view ─────────────────────────────────────────────────────────────
 
-type Page = "main" | "pick-lights" | "pick-sensors" | "pick-switches";
+type Page = "main" | "pick-lights" | "pick-sensors" | "pick-switches" | "pick-climates" | "pick-fans";
 
 interface Props {
   settings: HASettings | null;
@@ -37,10 +39,14 @@ export const SettingsView: FC<Props> = ({ settings: init, onBack }) => {
   const [selLights, setSelLights] = useState<string[]>(init?.selected_lights ?? []);
   const [selSensors, setSelSensors] = useState<string[]>(init?.selected_sensors ?? []);
   const [selSwitches, setSelSwitches] = useState<string[]>(init?.selected_switches ?? []);
+  const [selClimates, setSelClimates] = useState<string[]>(init?.selected_climates ?? []);
+  const [selFans, setSelFans] = useState<string[]>(init?.selected_fans ?? []);
 
   const [allLights, setAllLights] = useState<EntityInfo[]>([]);
   const [allSensors, setAllSensors] = useState<EntityInfo[]>([]);
   const [allSwitches, setAllSwitches] = useState<EntityInfo[]>([]);
+  const [allClimates, setAllClimates] = useState<EntityInfo[]>([]);
+  const [allFans, setAllFans] = useState<EntityInfo[]>([]);
   const [loadingEntities, setLoadingEntities] = useState(false);
 
   // Web config state
@@ -158,6 +164,30 @@ export const SettingsView: FC<Props> = ({ settings: init, onBack }) => {
     }
   };
 
+  const openClimatePicker = async () => {
+    setLoadingEntities(true);
+    try {
+      const s = await getSettings();
+      if (!s.ha_url || !s.ha_token) return;
+      setAllClimates(await getAllClimates());
+      setPage("pick-climates");
+    } finally {
+      setLoadingEntities(false);
+    }
+  };
+
+  const openFanPicker = async () => {
+    setLoadingEntities(true);
+    try {
+      const s = await getSettings();
+      if (!s.ha_url || !s.ha_token) return;
+      setAllFans(await getAllFans());
+      setPage("pick-fans");
+    } finally {
+      setLoadingEntities(false);
+    }
+  };
+
   const goBack = () => setPage("main");
 
   // Auto-save helpers — сохраняем при каждом тогgle, не надо жать Save
@@ -165,14 +195,16 @@ export const SettingsView: FC<Props> = ({ settings: init, onBack }) => {
     id: string,
     list: string[],
     setList: (v: string[]) => void,
-    type: "lights" | "sensors" | "switches"
+    type: "lights" | "sensors" | "switches" | "climates" | "fans"
   ) => {
     const next = list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
     setList(next);
     const lights   = type === "lights"   ? next : selLights;
     const sensors  = type === "sensors"  ? next : selSensors;
     const switches = type === "switches" ? next : selSwitches;
-    await saveSelectedEntities(lights, sensors, switches);
+    const climates = type === "climates" ? next : selClimates;
+    const fans     = type === "fans"     ? next : selFans;
+    await saveSelectedEntities(lights, sensors, switches, climates, fans);
   };
 
   // ── Light picker ────────────────────────────────────────────────────────────
@@ -256,6 +288,60 @@ export const SettingsView: FC<Props> = ({ settings: init, onBack }) => {
     );
   }
 
+  // ── Climate picker ──────────────────────────────────────────────────────────
+
+  if (page === "pick-climates") {
+    return (
+      <PanelSection title="🌡️ Climate — tap to toggle, changes save instantly">
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={goBack}>
+            <FaArrowLeft style={{ marginRight: "6px" }} /> Back
+          </ButtonItem>
+        </PanelSectionRow>
+        {allClimates.length === 0 ? (
+          <PanelSectionRow>
+            <div style={{ color: "#aaa", fontSize: "12px" }}>No climate devices found</div>
+          </PanelSectionRow>
+        ) : allClimates.map((c) => (
+          <PanelSectionRow key={c.entity_id}>
+            <ToggleField
+              label={c.name}
+              checked={selClimates.includes(c.entity_id)}
+              onChange={() => toggleAndSave(c.entity_id, selClimates, setSelClimates, "climates")}
+            />
+          </PanelSectionRow>
+        ))}
+      </PanelSection>
+    );
+  }
+
+  // ── Fan picker ──────────────────────────────────────────────────────────────
+
+  if (page === "pick-fans") {
+    return (
+      <PanelSection title="💨 Fans — tap to toggle, changes save instantly">
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={goBack}>
+            <FaArrowLeft style={{ marginRight: "6px" }} /> Back
+          </ButtonItem>
+        </PanelSectionRow>
+        {allFans.length === 0 ? (
+          <PanelSectionRow>
+            <div style={{ color: "#aaa", fontSize: "12px" }}>No fans found</div>
+          </PanelSectionRow>
+        ) : allFans.map((f) => (
+          <PanelSectionRow key={f.entity_id}>
+            <ToggleField
+              label={f.name}
+              checked={selFans.includes(f.entity_id)}
+              onChange={() => toggleAndSave(f.entity_id, selFans, setSelFans, "fans")}
+            />
+          </PanelSectionRow>
+        ))}
+      </PanelSection>
+    );
+  }
+
   // ── Main settings ───────────────────────────────────────────────────────────
 
   return (
@@ -331,6 +417,28 @@ export const SettingsView: FC<Props> = ({ settings: init, onBack }) => {
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={openSwitchPicker} disabled={loadingEntities}>
             {loadingEntities ? "Loading..." : "Choose Switches →"}
+          </ButtonItem>
+        </PanelSectionRow>
+
+        <PanelSectionRow>
+          <Field label="Climate" focusable={false}>
+            <span style={{ color: "#aaa" }}>{selClimates.length} selected</span>
+          </Field>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={openClimatePicker} disabled={loadingEntities}>
+            {loadingEntities ? "Loading..." : "Choose Climate →"}
+          </ButtonItem>
+        </PanelSectionRow>
+
+        <PanelSectionRow>
+          <Field label="Fans" focusable={false}>
+            <span style={{ color: "#aaa" }}>{selFans.length} selected</span>
+          </Field>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={openFanPicker} disabled={loadingEntities}>
+            {loadingEntities ? "Loading..." : "Choose Fans →"}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>

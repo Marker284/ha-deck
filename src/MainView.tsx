@@ -4,6 +4,7 @@ import {
   ButtonItem,
   ToggleField,
   SliderField,
+  DropdownItem,
   Field,
 } from "@decky/ui";
 import { FC, useState, useEffect, useCallback, useRef } from "react";
@@ -12,13 +13,22 @@ import {
   LightState,
   SwitchState,
   SensorState,
+  ClimateState,
+  FanState,
   getLightStates,
   getSensorStates,
   getSwitchStates,
+  getClimateStates,
+  getFanStates,
   toggleLight,
   toggleSwitch,
   setBrightness,
   setColorTemp,
+  setClimateTemperature,
+  setClimateHvacMode,
+  toggleFan,
+  setFanPercentage,
+  setFanPresetMode,
 } from "./api";
 
 
@@ -31,6 +41,8 @@ export const MainView: FC<Props> = ({ settings, onOpenSettings }) => {
   const [lights, setLights] = useState<LightState[]>([]);
   const [switches, setSwitches] = useState<SwitchState[]>([]);
   const [sensors, setSensors] = useState<SensorState[]>([]);
+  const [climates, setClimates] = useState<ClimateState[]>([]);
+  const [fans, setFans] = useState<FanState[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState("");
 
@@ -55,7 +67,9 @@ export const MainView: FC<Props> = ({ settings, onOpenSettings }) => {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [ls, ss, sw] = await Promise.all([
+      const selClimates = settings.selected_climates ?? [];
+      const selFans = settings.selected_fans ?? [];
+      const [ls, ss, sw, cl, fn] = await Promise.all([
         settings.selected_lights.length > 0
           ? getLightStates(settings.selected_lights)
           : Promise.resolve([]),
@@ -65,10 +79,18 @@ export const MainView: FC<Props> = ({ settings, onOpenSettings }) => {
         settings.selected_switches.length > 0
           ? getSwitchStates(settings.selected_switches)
           : Promise.resolve([]),
+        selClimates.length > 0
+          ? getClimateStates(selClimates)
+          : Promise.resolve([]),
+        selFans.length > 0
+          ? getFanStates(selFans)
+          : Promise.resolve([]),
       ]);
       setLights(ls);
       setSensors(ss);
       setSwitches(sw);
+      setClimates(cl);
+      setFans(fn);
       setLastUpdated(new Date().toLocaleTimeString());
     } finally {
       setRefreshing(false);
@@ -137,10 +159,48 @@ export const MainView: FC<Props> = ({ settings, onOpenSettings }) => {
     setTimeout(refresh, 700);
   };
 
+  // ── Climate handlers ──────────────────────────────────────────────────────
+
+  const handleClimateTemp = (entity_id: string, temperature: number) => {
+    setClimates((p) => p.map((c) => c.entity_id === entity_id ? { ...c, target_temperature: temperature } : c));
+    debounced(`climatetemp:${entity_id}`, () => setClimateTemperature(entity_id, temperature));
+  };
+
+  const handleClimateMode = async (entity_id: string, hvac_mode: string) => {
+    setClimates((p) => p.map((c) => c.entity_id === entity_id ? { ...c, hvac_mode } : c));
+    await setClimateHvacMode(entity_id, hvac_mode);
+    setTimeout(refresh, 700);
+  };
+
+  // ── Fan handlers ──────────────────────────────────────────────────────────
+
+  const handleToggleFan = async (entity_id: string) => {
+    setFans((p) =>
+      p.map((f) =>
+        f.entity_id === entity_id ? { ...f, state: f.state === "on" ? "off" : "on" } : f
+      )
+    );
+    await toggleFan(entity_id);
+    setTimeout(refresh, 700);
+  };
+
+  const handleFanPercentage = (entity_id: string, pct: number) => {
+    setFans((p) => p.map((f) => f.entity_id === entity_id ? { ...f, percentage: pct } : f));
+    debounced(`fanpct:${entity_id}`, () => setFanPercentage(entity_id, pct));
+  };
+
+  const handleFanPreset = async (entity_id: string, preset_mode: string) => {
+    setFans((p) => p.map((f) => f.entity_id === entity_id ? { ...f, preset_mode } : f));
+    await setFanPresetMode(entity_id, preset_mode);
+    setTimeout(refresh, 700);
+  };
+
   const noEntities =
     settings.selected_lights.length === 0 &&
     settings.selected_sensors.length === 0 &&
-    settings.selected_switches.length === 0;
+    settings.selected_switches.length === 0 &&
+    (settings.selected_climates ?? []).length === 0 &&
+    (settings.selected_fans ?? []).length === 0;
 
   return (
     <>
@@ -224,6 +284,100 @@ export const MainView: FC<Props> = ({ settings, onOpenSettings }) => {
               />
             </PanelSectionRow>
           ))}
+        </PanelSection>
+      )}
+
+      {/* Climate */}
+      {climates.length > 0 && (
+        <PanelSection title="🌡️ Climate">
+          {climates.map((cl) => {
+            const target = cl.target_temperature ?? cl.min_temp;
+            const isOff = cl.hvac_mode === "off" || cl.hvac_mode === "unavailable";
+            const modeOptions = cl.hvac_modes.map((m) => ({ data: m, label: m }));
+            return (
+              <div key={cl.entity_id}>
+                <PanelSectionRow>
+                  <Field label={cl.name} focusable={true}>
+                    <span style={{ color: "#4a9eff", fontWeight: "bold" }}>
+                      {cl.current_temperature !== null
+                        ? `${cl.current_temperature}${cl.unit}`
+                        : cl.hvac_mode}
+                      {cl.hvac_action ? ` · ${cl.hvac_action}` : ""}
+                    </span>
+                  </Field>
+                </PanelSectionRow>
+
+                {modeOptions.length > 0 && (
+                  <PanelSectionRow>
+                    <DropdownItem
+                      label="Mode"
+                      rgOptions={modeOptions}
+                      selectedOption={cl.hvac_mode}
+                      onChange={(opt) => handleClimateMode(cl.entity_id, opt.data as string)}
+                    />
+                  </PanelSectionRow>
+                )}
+
+                {!isOff && cl.target_temperature !== null && (
+                  <PanelSectionRow>
+                    <SliderField
+                      label={`🎯 Target: ${target}${cl.unit}`}
+                      value={target}
+                      min={cl.min_temp}
+                      max={cl.max_temp}
+                      step={cl.target_temp_step || 0.5}
+                      onChange={(v) => handleClimateTemp(cl.entity_id, v)}
+                    />
+                  </PanelSectionRow>
+                )}
+              </div>
+            );
+          })}
+        </PanelSection>
+      )}
+
+      {/* Fans */}
+      {fans.length > 0 && (
+        <PanelSection title="💨 Fans">
+          {fans.map((fn) => {
+            const pct = fn.percentage ?? 0;
+            const presetOptions = fn.preset_modes.map((m) => ({ data: m, label: m }));
+            return (
+              <div key={fn.entity_id}>
+                <PanelSectionRow>
+                  <ToggleField
+                    label={fn.name}
+                    checked={fn.state === "on"}
+                    onChange={() => handleToggleFan(fn.entity_id)}
+                  />
+                </PanelSectionRow>
+
+                {fn.state === "on" && fn.supports_speed && (
+                  <PanelSectionRow>
+                    <SliderField
+                      label={`💨 Speed: ${pct}%`}
+                      value={pct}
+                      min={0}
+                      max={100}
+                      step={fn.percentage_step || 1}
+                      onChange={(v) => handleFanPercentage(fn.entity_id, v)}
+                    />
+                  </PanelSectionRow>
+                )}
+
+                {fn.state === "on" && fn.supports_preset && presetOptions.length > 0 && (
+                  <PanelSectionRow>
+                    <DropdownItem
+                      label="Preset"
+                      rgOptions={presetOptions}
+                      selectedOption={fn.preset_mode ?? ""}
+                      onChange={(opt) => handleFanPreset(fn.entity_id, opt.data as string)}
+                    />
+                  </PanelSectionRow>
+                )}
+              </div>
+            );
+          })}
         </PanelSection>
       )}
 
