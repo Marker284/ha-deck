@@ -15,8 +15,10 @@ Control [Home Assistant](https://www.home-assistant.io/) directly from your Stea
 ## Features
 
 - 💡 **Lights** — toggle on/off, brightness slider, color temperature
-- 🔌 **Switches** — control switches, input booleans, fans, automations, scripts
-- 🌡️ **Sensors** — view temperature, humidity, and other sensor values
+- 🔌 **Switches** — control switches, input booleans, automations, scripts
+- 🌡️ **Climate** — set HVAC mode, target temperature, view current temperature and action
+- 💨 **Fans** — toggle, variable speed slider, preset modes
+- 📊 **Sensors** — view temperature, humidity, and other sensor values
 - ⚙️ **Easy setup** — configure via browser on your phone or PC (no typing on the Deck)
 - 🔄 **Auto-refresh** — updates every 30 seconds while panel is open; stops when closed
 
@@ -44,7 +46,7 @@ Control [Home Assistant](https://www.home-assistant.io/) directly from your Stea
 ## Configuration
 
 After initial setup, go to **Settings** to:
-- Select which lights/switches/sensors to show
+- Select which lights/switches/climate/fans/sensors to show
 - Reconfigure HA credentials (toggle Web Server on)
 - Reset all settings
 
